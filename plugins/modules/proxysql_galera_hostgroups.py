@@ -24,7 +24,37 @@ options:
       - Id of the writer hostgroup.
     type: int
     required: True
+  backup_writer_hostgroup:
+    description:
+      - Id of the writer hostgroup.
+    type: int
+    required: True
   reader_hostgroup:
+    description:
+      - Id of the reader hostgroup.
+    type: int
+    required: True
+  offline_hostgroup:
+    description:
+      - Id of the reader hostgroup.
+    type: int
+    required: True
+  active:
+    description:
+      - Id of the reader hostgroup.
+    type: int
+    required: True
+  max_writers:
+    description:
+      - Id of the reader hostgroup.
+    type: int
+    required: True
+  writer_is_also_reader:
+    description:
+      - Id of the reader hostgroup.
+    type: int
+    required: True
+  max_transactions_behind:
     description:
       - Id of the reader hostgroup.
     type: int
@@ -41,15 +71,6 @@ options:
     type: str
     choices: [ "present", "absent" ]
     default: present
-  check_type:
-    description:
-      - Which check type to use when detecting that the node is a standby.
-      - Requires proxysql >= 2.0.1. Otherwise it has no effect.
-      - C(read_only|innodb_read_only) and C(read_only&innodb_read_only) requires proxysql >= 2.0.8.
-    type: str
-    choices: [ "read_only", "innodb_read_only", "super_read_only", "read_only|innodb_read_only", "read_only&innodb_read_only" ]
-    default: read_only
-    version_added: 1.3.0
 extends_documentation_fragment:
 - community.proxysql.proxysql.managing_config
 - community.proxysql.proxysql.connectivity
@@ -72,16 +93,6 @@ EXAMPLES = '''
     login_password: 'admin'
     writer_hostgroup: 1
     reader_hostgroup: 2
-    state: present
-    load_to_runtime: False
-
-- name: Change check_type
-  community.proxysql.proxysql_galera_hostgroups:
-    login_user: 'admin'
-    login_password: 'admin'
-    writer_hostgroup: 1
-    reader_hostgroup: 2
-    check_type: innodb_read_only
     state: present
     load_to_runtime: False
 
@@ -110,8 +121,7 @@ stdout:
         "galera_group": {
             "comment": "",
             "reader_hostgroup": "1",
-            "writer_hostgroup": "2",
-            "check_type": "read_only"
+            "writer_hostgroup": "2"
         },
         "state": "present"
     }
@@ -155,10 +165,14 @@ class ProxySQLGaleraHostgroup(object):
         self.save_to_disk = module.params["save_to_disk"]
         self.load_to_runtime = module.params["load_to_runtime"]
         self.writer_hostgroup = module.params["writer_hostgroup"]
+        self.backup_writer_hostgroup = module.params["backup_writer_hostgroup"]
         self.reader_hostgroup = module.params["reader_hostgroup"]
+        self.offline_hostgroup = module.params["offline_hostgroup"]
+        self.active = module.params["active"]
+        self.max_writers = module.params["max_writers"]
+        self.writer_is_also_reader = module.params["writer_is_also_reader"]
+        self.max_transactions_behind = module.params["max_transactions_behind"]
         self.comment = module.params["comment"]
-        self.check_type = module.params["check_type"]
-        self.check_type_support = version.get('major') >= 2
         self.check_mode = module.check_mode
 
     def check_galera_group_config(self, cursor, keys):
@@ -191,19 +205,28 @@ class ProxySQLGaleraHostgroup(object):
         query_string = \
             """INSERT INTO mysql_galera_hostgroups (
                writer_hostgroup,
+               backup_writer_hostgroup,
                reader_hostgroup,
+               offline_hostgroup,
+               active,
+               max_writers,
+               writer_is_also_reader,
+               max_transactions_behind,
                comment)
-               VALUES (%s, %s, %s)"""
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"""
 
         query_data = \
             [self.writer_hostgroup,
+             self.backup_writer_hostgroup,
              self.reader_hostgroup,
+             self.offline_hostgroup,
+             self.active,
+             self.max_writers,
+             self.writer_is_also_reader,
+             self.max_transactions_behind,
              self.comment or '']
 
         cursor.execute(query_string, query_data)
-
-        if self.check_type_support:
-            self.update_check_type(cursor)
 
         return True
 
@@ -243,14 +266,6 @@ class ProxySQLGaleraHostgroup(object):
     def update_galera_group(self, result, cursor):
         current = self.get_galera_group_config(cursor)
 
-        if self.check_type_support and current.get('check_type') != self.check_type:
-            result['changed'] = True
-            if not self.check_mode:
-                result['msg'] = "Updated galera hostgroups"
-                self.update_check_type(cursor)
-            else:
-                result['msg'] = "Updated galera hostgroups in check_mode"
-
         if current.get('comment') != self.comment:
             result['changed'] = True
             result['msg'] = "Updated galera hostgroups in check_mode"
@@ -285,16 +300,6 @@ class ProxySQLGaleraHostgroup(object):
                              " mysql_galera_hostgroups, however" +
                              " check_mode is enabled.")
 
-    def update_check_type(self, cursor):
-        try:
-            query_string = ("UPDATE mysql_galera_hostgroups "
-                            "SET check_type = %s "
-                            "WHERE writer_hostgroup = %s")
-
-            cursor.execute(query_string, (self.check_type, self.writer_hostgroup))
-        except Exception as e:
-            pass
-
     def update_reader_hostgroup(self, cursor):
         query_string = ("UPDATE mysql_galera_hostgroups "
                         "SET reader_hostgroup = %s "
@@ -317,12 +322,13 @@ def main():
     argument_spec = proxysql_common_argument_spec()
     argument_spec.update(
         writer_hostgroup=dict(required=True, type='int'),
+        backup_writer_hostgroup=dict(required=True, type='int'),
         reader_hostgroup=dict(required=True, type='int'),
-        check_type=dict(type='str', default='read_only', choices=['read_only',
-                                                                  'innodb_read_only',
-                                                                  'super_read_only',
-                                                                  'read_only|innodb_read_only',
-                                                                  'read_only&innodb_read_only']),
+        offline_hostgroup=dict(required=True, type='int'),
+        active=dict(required=True, type='int'),
+        max_writers=dict(required=True, type='int'),
+        writer_is_also_reader=dict(required=True, type='int'),
+        max_transactions_behind=dict(required=True, type='int'),
         comment=dict(type='str', default=''),
         state=dict(default='present', choices=['present',
                                                'absent']),
